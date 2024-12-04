@@ -26,16 +26,17 @@ class GameConstants:
     
     # Display
     FPS = 60
-    MENU_OVERLAY_ALPHA = 1
-    MENU_OVERLAY_COLOR = (190, 190, 190)
+    MENU_OVERLAY_ALPHA = 20
+    MENU_OVERLAY_COLOR = (200, 200, 200)
     TILE_DIVISOR = 30
     
     # UI Constants
     UI_MARGIN = 20  # Margen desde los bordes
     UI_HEALTH_WIDTH = 200  # Ancho de la barra de vida
     UI_HEALTH_HEIGHT = 30  # Alto de la barra de vida
+    UI_MARGIN_BOTTOM = 50  # Nueva constante para margen inferior
     PLAYER_MAX_HEALTH = 300
-    PLAYER_DAMAGE_FALL = 100  # Un tercio de la vida máxima
+    PLAYER_RESPAWN_DAMAGE = 100  # Renombrado de PLAYER_DAMAGE_FALL
 
 class AudioConfig:
     """Configuration class for audio settings"""
@@ -142,23 +143,65 @@ class Pantalla:
         return self.screen_data.display_surface
 
     def get_screen_data(self, *args):
+        """Get screen data using method chaining"""
+        if len(args) == 1:
+            return self.screen_data.get_data(args[0])
         return self.screen_data.get_data(*args)
 
     def actualizar_juego(self, **kwargs):
+        """Update game display with all game objects"""
+        self._clear_screen()
+        self._draw_all_objects(kwargs)
+        self._update_display()
+
+    def _clear_screen(self):
+        """Clear screen with background color"""
         self.display_surface.fill(GameConstants.COLORS['BLACK'])
 
-        for obj in kwargs.values():
-            obj.dibujar(self)
-        
+    def _draw_all_objects(self, game_objects):
+        """Draw all game objects in the correct order"""
+        # Dibujar fondo primero
+        if 'fondo' in game_objects:
+            game_objects['fondo'].dibujar(self)
+
+        # Dibujar jugadores que no están cavando
+        if 'jugadores' in game_objects:
+            for jugador in game_objects['jugadores']:
+                if jugador.estado_gravedad == GameConstants.STATE_DIGGING:
+                    jugador.dibujar(self)
+
+        # Dibujar plataformas
+        if 'plataforma' in game_objects:
+            game_objects['plataforma'].dibujar(self)
+
+        # Dibujar jugadores que están cavando
+        if 'jugadores' in game_objects:
+            for jugador in game_objects['jugadores']:
+                if jugador.estado_gravedad != GameConstants.STATE_DIGGING:
+                    jugador.dibujar(self)
+
+        # Dibujar HUD al final
+        if 'hud' in game_objects:
+            game_objects['hud'](self)
+
+    def _update_display(self):
+        """Update the display"""
         pygame.display.flip()
 
     def actualizar_menu(self):
-        # Crear una superficie con transparencia
-        overlay = pygame.Surface((self.screen_data.total_width, self.screen_data.total_height), pygame.SRCALPHA)
-        overlay.fill((*GameConstants.MENU_OVERLAY_COLOR, GameConstants.MENU_OVERLAY_ALPHA))  # Rellenar con negro y 50% de transparencia (128 en el canal alfa)
-        self.display_surface.blit(overlay, (0, 0))
+        """Update menu display with overlay"""
+        #self._clear_screen()#
+        self._draw_menu_overlay()
+        self._update_display()
 
-        pygame.display.flip()
+    def _draw_menu_overlay(self):
+        """Draw semi-transparent menu overlay"""
+        overlay = pygame.Surface(
+            (self.screen_data.total_width, self.screen_data.total_height), 
+            pygame.SRCALPHA
+        )
+        overlay.fill((*GameConstants.MENU_OVERLAY_COLOR, GameConstants.MENU_OVERLAY_ALPHA))
+        self.display_surface.blit(overlay, (0, 0))
 
     def detener(self):
         pygame.display.quit()
@@ -193,8 +236,10 @@ class CollisionHandler:
     def update_character_state(character, collision_state, keys):
         """Update character state based on collisions"""
         if collision_state.body:
+            # Usar los controles específicos del jugador para verificar la tecla abajo
+            down_key = character.controls.get_key('down')
             if (character.estado_gravedad in [GameConstants.STATE_DIGGING, GameConstants.STATE_FALLING] and 
-                keys[pygame.K_DOWN]):
+                keys[down_key]):  # Cambiar pygame.K_DOWN por down_key
                 character.estado_gravedad = GameConstants.STATE_DIGGING
             else:
                 character.estado_gravedad = GameConstants.STATE_IDLE
@@ -211,25 +256,161 @@ class CollisionHandler:
             character.cavando(False)
 
 class Personaje:
-    salto = False
-    cavar = False
-    ensima_Colision = None  # Corrected typo here
-    estado_gravedad = GameConstants.STATE_FALLING
-    velocidad_x = 0
-    velocidad_y = 0
+    """Player character with configurable controls and physics"""
+    def __init__(self, x, y, tamaño, controls=None, player_id=1):
+        self._init_physics(x, y, tamaño)
+        self._init_state(player_id)
+        self._init_controls(controls, player_id)
+        self._init_stats()
 
-    def __init__(self, x, y, tamaño):
+    def _init_physics(self, x, y, tamaño):
+        """Initialize physics-related attributes"""
         self.rect = pygame.Rect(x, y, tamaño, tamaño)
-        self.arriba_rect = pygame.Rect(x, y - tamaño / 2, tamaño, tamaño / 2)
-        self.abajo_rect = pygame.Rect(x, y + tamaño, tamaño, tamaño / 2)
-        self.derecha_rect = pygame.Rect((x + tamaño), y, tamaño / 2, tamaño)
-        self.izquierda_rect = pygame.Rect(x - tamaño / 2, y, tamaño / 2, tamaño)
         self.tamaño = tamaño
-        self.velocidad_maxima = tamaño / GameConstants.MAX_SPEED_FACTOR
-        self.gravedad = tamaño / GameConstants.GRAVITY_FACTOR
-        self.freno = tamaño / GameConstants.BRAKE_FACTOR
-        self.aceleracion = tamaño / GameConstants.ACCELERATION_FACTOR
-    
+        self._create_collision_rects(x, y)
+        self._setup_movement_params()
+        
+    def _create_collision_rects(self, x, y):
+        """Create collision detection rectangles"""
+        h = self.tamaño / 2
+        self.arriba_rect = pygame.Rect(x, y - h, self.tamaño, h)
+        self.abajo_rect = pygame.Rect(x, y + self.tamaño, self.tamaño, h)
+        self.derecha_rect = pygame.Rect(x + self.tamaño, y, h, self.tamaño)
+        self.izquierda_rect = pygame.Rect(x - h, y, h, self.tamaño)
+
+    def _setup_movement_params(self):
+        """Setup movement and physics parameters"""
+        self.velocidad_maxima = self.tamaño / GameConstants.MAX_SPEED_FACTOR
+        self.gravedad = self.tamaño / GameConstants.GRAVITY_FACTOR
+        self.freno = self.tamaño / GameConstants.BRAKE_FACTOR
+        self.aceleracion = self.tamaño / GameConstants.ACCELERATION_FACTOR
+        self.velocidad_x = 0
+        self.velocidad_y = 0
+
+    def _init_state(self, player_id):
+        """Initialize state variables"""
+        self.player_id = player_id
+        # Configurar sprite según player_id
+        self.sprite_config = {
+            1: {'row': 0, 'col': 0},  # Jugador 1: sprite en (0,0)
+            2: {'row': 1, 'col': 1}   # Jugador 2: sprite en (1,1)
+        }.get(player_id, {'row': 0, 'col': 0})  # Default a (0,0) si no es 1 o 2
+        
+        self.salto = False
+        self.cavar = False
+        self.ensima_Colision = None
+        self.estado_gravedad = GameConstants.STATE_FALLING
+
+    def _init_controls(self, controls, player_id):
+        """Initialize player controls"""
+        self.controls = controls or PlayerControls.get_default_controls(player_id)  
+        
+    def _init_stats(self):
+        """Initialize player stats"""
+        self.health = GameConstants.PLAYER_MAX_HEALTH
+
+    def actualizar_velocidades(self, teclas, velocidad_escalada_x, velocidad_escalada_y):
+        """Update velocities based on input"""
+        self._handle_horizontal_movement(teclas, velocidad_escalada_x)
+        self._handle_vertical_movement(teclas, velocidad_escalada_y)
+
+    def _handle_horizontal_movement(self, teclas, velocidad_escalada_x):
+        """Handle left/right movement"""
+        if (teclas[self.controls.get_key('left')] and 
+            self.velocidad_maxima * -1 <= velocidad_escalada_x):
+            self.velocidad_x -= self.aceleracion
+            
+        if (teclas[self.controls.get_key('right')] and 
+            self.velocidad_maxima >= velocidad_escalada_x):
+            self.velocidad_x += self.aceleracion
+
+    def _handle_vertical_movement(self, teclas, velocidad_escalada_y):
+        """Handle jumping and digging"""
+        resource_manager = ResourceManager()
+        
+        # Jumping
+        if self._can_jump(teclas, velocidad_escalada_y):
+            self._perform_jump(resource_manager)
+            
+        # Digging
+        if self._can_dig(teclas, velocidad_escalada_y):
+            self._perform_dig(resource_manager)
+
+    def _can_jump(self, teclas, velocidad_escalada_y):
+        return (teclas[self.controls.get_key('up')] and 
+                self.velocidad_maxima * -1 <= velocidad_escalada_y and 
+                self.salto)
+
+    def _can_dig(self, teclas, velocidad_escalada_y):
+        return (teclas[self.controls.get_key('down')] and 
+                self.velocidad_maxima >= velocidad_escalada_y and 
+                self.cavar)
+
+    def _perform_jump(self, resource_manager):
+        resource_manager.play_sound('jump')
+        self.salto = False
+        self.estado_gravedad = GameConstants.STATE_FALLING
+        self.velocidad_y -= self.aceleracion * GameConstants.JUMP_FORCE
+
+    def _perform_dig(self, resource_manager):
+        resource_manager.play_sound('dig')
+        self.cavar = False
+        self.estado_gravedad = GameConstants.STATE_DIGGING
+        self.velocidad_y += self.aceleracion * GameConstants.JUMP_FORCE
+
+    def frenar(self, teclas):
+        """Apply braking forces"""
+        self._brake_horizontal(teclas)
+        self._brake_vertical(teclas)
+
+    def _brake_horizontal(self, teclas):
+        """Apply horizontal braking"""
+        left_key = self.controls.get_key('left')
+        right_key = self.controls.get_key('right')
+        
+        if not teclas[left_key] and not teclas[right_key] and self.velocidad_x != 0:
+            self._apply_horizontal_brake()
+        else:
+            self._apply_horizontal_resistance()
+
+    def _brake_vertical(self, teclas):
+        """Apply vertical braking"""
+        up_key = self.controls.get_key('up')
+        down_key = self.controls.get_key('down')
+        
+        if not teclas[up_key] and not teclas[down_key] and self.velocidad_y != 0:
+            self._apply_vertical_brake()
+        else:
+            self._apply_vertical_resistance()
+
+    def _apply_horizontal_brake(self):
+        """Apply horizontal brake force"""
+        if self.velocidad_x > 0:
+            self.velocidad_x -= self.freno / 10 if not self.salto else self.freno
+        elif self.velocidad_x < 0:
+            self.velocidad_x += self.freno / 10 if not self.salto else self.freno
+
+    def _apply_horizontal_resistance(self):
+        """Apply horizontal resistance"""
+        if self.velocidad_x > 0:
+            self.velocidad_x -= int(self.freno / 10)
+        elif self.velocidad_x < 0:
+            self.velocidad_x += int(self.freno / 10)
+
+    def _apply_vertical_brake(self):
+        """Apply vertical brake force"""
+        if self.velocidad_y > 0:
+            self.velocidad_y -= int(self.freno / 1.5)
+        elif self.velocidad_y < 0:
+            self.velocidad_y += int(self.freno)
+
+    def _apply_vertical_resistance(self):
+        """Apply vertical resistance"""
+        if self.velocidad_y > 0:
+            self.velocidad_y -= int(self.freno / 4)
+        elif self.velocidad_y < 0:
+            self.velocidad_y += int(self.freno / 4)
+
     def get_rect(self):
         return self.rect
 
@@ -286,102 +467,79 @@ class Personaje:
             self.rect.y = self.ensima_Colision.y - self.tamaño
             self.actualizar_posicion_rects()
 
-    def muerto(self, pantalla=Pantalla):
+    def mover(self, teclas, delta_time, pantalla):
+        self._check_respawn(pantalla)
+        self._update_physics(teclas)
+        
+        velocidad_escalada = self._scale_velocities(delta_time)
+        self.actualizar_velocidades(teclas, *velocidad_escalada)
+        self._update_position(velocidad_escalada)
+
+    def _check_respawn(self, pantalla):
+        """Check if player needs to respawn and apply respawn damage"""
         datos_pantalla = pantalla.get_screen_data(
-            "tiles_y", 
-            "tiles_x",
-            "border_x",
-            "border_y",
-            "tile_size"
-            )
+            "tiles_y", "tiles_x", "border_x", 
+            "border_y", "tile_size"
+        )
         inicio_X = datos_pantalla[2] // 2 
         inicio_Y = datos_pantalla[3] // 2
         tamaño_X = datos_pantalla[4] * datos_pantalla[1]
         tamaño_Y = datos_pantalla[4] * datos_pantalla[0]
-        if self.rect.y > tamaño_Y+self.tamaño:
+        
+        if self.rect.y > tamaño_Y + self.tamaño:
+            self.take_damage(GameConstants.PLAYER_RESPAWN_DAMAGE)
             self.reiniciar_posicion(inicio_X + tamaño_X//2, inicio_Y + tamaño_Y//2)
 
-    def mover(self, teclas, delta_time, pantalla):
-        self.muerto(pantalla)
+    def _update_physics(self, teclas):
+        """Update physics state"""
         self.accion_gravedad()
         self.frenar(teclas)
 
-        velocidad_escalada_x = int(self.velocidad_x * delta_time * 10) / 10
-        velocidad_escalada_y = int(self.velocidad_y * delta_time * 10) / 10
-
-        # Actualizar velocidades según teclas
-        self.actualizar_velocidades(teclas, velocidad_escalada_x, velocidad_escalada_y)
-
-        # Actualizar posiciones
-        self.rect.x += velocidad_escalada_x
-        self.rect.y += velocidad_escalada_y
+    def _update_position(self, velocidades):
+        """Update position based on scaled velocities"""
+        self.rect.x += velocidades[0]
+        self.rect.y += velocidades[1]
         self.actualizar_posicion_rects()
 
-    def actualizar_velocidades(self, teclas, velocidad_escalada_x, velocidad_escalada_y):
-        """Actualiza las velocidades según las teclas presionadas"""
-        resource_manager = ResourceManager()
-        if teclas[pygame.K_LEFT] and self.velocidad_maxima * -1 <= velocidad_escalada_x:
-            self.velocidad_x -= self.aceleracion
-        if teclas[pygame.K_RIGHT] and self.velocidad_maxima >= velocidad_escalada_x:
-            self.velocidad_x += self.aceleracion
-        if teclas[pygame.K_UP] and self.velocidad_maxima * -1 <= velocidad_escalada_y and self.salto:
-            resource_manager.play_sound('jump')
-            self.salto = False
-            self.estado_gravedad = GameConstants.STATE_FALLING
-            self.velocidad_y -= self.aceleracion * GameConstants.JUMP_FORCE
-        if teclas[pygame.K_DOWN] and self.velocidad_maxima >= velocidad_escalada_y and self.cavar:
-            resource_manager.play_sound('dig')
-            self.cavar = False
-            self.estado_gravedad = GameConstants.STATE_DIGGING
-            self.velocidad_y += self.aceleracion * GameConstants.JUMP_FORCE
+    def _scale_velocities(self, delta_time):
+        """Scale velocities based on delta time"""
+        scale_factor = delta_time * 10
+        return (
+            int(self.velocidad_x * scale_factor) / 10,
+            int(self.velocidad_y * scale_factor) / 10
+        )
 
-    def frenar(self, teclas):
-        if not teclas[pygame.K_LEFT] and not teclas[pygame.K_RIGHT] and self.velocidad_x != 0:
-            if self.velocidad_x > 0:
-                if not self.salto:
-                    self.velocidad_x -= self.freno/10
-                else:
-                    self.velocidad_x = int(self.velocidad_x/10)*10                
-                    self.velocidad_x -= self.freno
-            elif self.velocidad_x < 0:
-                if not self.salto:
-                    self.velocidad_x += self.freno/10
-                else:
-                    self.velocidad_x = int(self.velocidad_x/10)*10
-                    self.velocidad_x += self.freno
-        else:
-            if self.velocidad_x > 0:
-                self.velocidad_x -= int(self.freno/10)
-            elif self.velocidad_x < 0:
-                self.velocidad_x += int(self.freno/10)
-        
-        if not teclas[pygame.K_UP] and not teclas[pygame.K_DOWN] and self.velocidad_y != 0:
-            if self.velocidad_y > 0:
-                self.velocidad_y -= int(self.freno/1.5)
-            elif self.velocidad_y < 0:
-                self.velocidad_y += int(self.freno)
-        else:
-            if self.velocidad_y > 0:
-                self.velocidad_y -= int(self.freno/4)
-            elif self.velocidad_y < 0:
-                self.velocidad_y += int(self.freno/4)
-        
+    def take_damage(self, amount):
+        self.health = max(0, self.health - amount)
 
-    
+    def heal(self, amount):
+        self.health = min(GameConstants.PLAYER_MAX_HEALTH, self.health + amount)
+
+    def get_health_percentage(self):
+        return self.health / GameConstants.PLAYER_MAX_HEALTH
+
     def dibujar(self, pantalla=Pantalla):
         resource_manager = ResourceManager()
-        pantalla= pantalla.get_screen_data("display")
-        player_image = resource_manager.get_scaled_sprite('player', self.tamaño, self.tamaño, 0, 0)
+        display = pantalla.get_screen_data("display")
+        
+        player_image = resource_manager.get_scaled_sprite(
+            'player', 
+            self.tamaño, 
+            self.tamaño, 
+            self.sprite_config['row'], 
+            self.sprite_config['col']
+        )
         
         if player_image:
-            pantalla.blit(player_image, self.rect)
+            display.blit(player_image, self.rect)
         else:
-            pygame.draw.rect(pantalla, GameConstants.COLORS['RED'], self.rect)
+            pygame.draw.rect(display, GameConstants.COLORS['RED'], self.rect)
+            
         #probar hitbox
-        pygame.draw.rect(pantalla, GameConstants.COLORS['BLUE'], self.arriba_rect)
-        pygame.draw.rect(pantalla, GameConstants.COLORS['BLUE'], self.abajo_rect)
-        pygame.draw.rect(pantalla, GameConstants.COLORS['BLUE'], self.derecha_rect)
-        pygame.draw.rect(pantalla, GameConstants.COLORS['BLUE'], self.izquierda_rect)
+        pygame.draw.rect(display, GameConstants.COLORS['BLUE'], self.arriba_rect)
+        pygame.draw.rect(display, GameConstants.COLORS['BLUE'], self.abajo_rect)
+        pygame.draw.rect(display, GameConstants.COLORS['BLUE'], self.derecha_rect)
+        pygame.draw.rect(display, GameConstants.COLORS['BLUE'], self.izquierda_rect)
 
 
 # Clase para manejar el fondo
@@ -510,64 +668,111 @@ def crear_plataformas(controlador=controlador_plataformas, pantalla=Pantalla):
 
 class GameStateManager:
     """Manages game states and transitions"""
-    def __init__(self, pantalla, jugador, controlador):
+    def __init__(self, pantalla, jugadores, controlador, hud):
         self.pantalla = pantalla
-        self.jugador = jugador
+        self._setup_game_objects(jugadores, controlador, hud)
+        self._setup_game_state()
+
+    def _setup_game_objects(self, jugadores, controlador, hud):
+        """Initialize game objects"""
+        self.jugadores = jugadores if isinstance(jugadores, list) else [jugadores]
         self.controlador = controlador
-        self.clock = pygame.time.Clock()
-        self.current_state = "menu"
+        self.hud = hud
         self.fondo = Fondo()
-        self.running = True
         self.resource_manager = ResourceManager()
         self.resource_manager.load_resources()
 
+    def _setup_game_state(self):
+        """Initialize game state variables"""
+        self.clock = pygame.time.Clock()
+        self.current_state = "menu"
+        self.running = True
+        self.controlador = crear_plataformas(self.controlador, self.pantalla)
+
+    def run(self):
+        """Main game loop"""
+        while self.running:
+            self.running = not self._handle_current_state()
+        return True
+
+    def _handle_current_state(self):
+        """Handle current game state"""
+        state_handlers = {
+            "menu": self.handle_menu,
+            "playing": self.handle_playing
+        }
+        return state_handlers.get(self.current_state, lambda: False)()
+
     def handle_menu(self):
-        for evento in pygame.event.get():
-            if evento.type == pygame.QUIT:
-                return True
-        
+        """Handle menu state"""
+        if self._check_quit_event():
+            return True
+
         teclas = pygame.key.get_pressed()
         self.pantalla.actualizar_menu()
 
         if teclas[pygame.K_ESCAPE]:
-            pygame.time.wait(200)
-            self.current_state = "playing"
+            self._transition_to_state("playing")
         elif teclas[pygame.K_BACKSPACE]:
             return True
         return False
 
     def handle_playing(self):
+        """Handle playing state"""
+        if self._check_quit_event():
+            return True
+
+        delta_time = self._update_time()
+        teclas = pygame.key.get_pressed()
+
+        if self._handle_escape_key(teclas):
+            return False
+
+        self._update_game_state(teclas, delta_time)
+        self._render_game()
+        return False
+
+    def _check_quit_event(self):
+        """Check for quit events"""
         for evento in pygame.event.get():
             if evento.type == pygame.QUIT:
                 return True
+        return False
+        
+    def _transition_to_state(self, new_state):
+        """Handle state transition"""
+        pygame.time.wait(200)
+        self.current_state = new_state
 
-        delta_time = self.clock.tick(GameConstants.FPS) / 1000.0
-        teclas = pygame.key.get_pressed()
-
+    def _handle_escape_key(self, teclas):
+        """Handle escape key press"""
         if teclas[pygame.K_ESCAPE]:
-            pygame.time.wait(200)
-            self.current_state = "menu"
-            return False
-
-        self.jugador.calcular_colision(self.controlador, teclas)
-        self.jugador.mover(teclas, delta_time, self.pantalla)
-        self.pantalla.actualizar_juego(
-            fondo=self.fondo,
-            personaje=self.jugador,
-            plataforma=self.controlador,
-        )
+            self._transition_to_state("menu")
+            return True
         return False
 
-    def run(self):
-        self.controlador = crear_plataformas(self.controlador, self.pantalla)
-        
-        while self.running:
-            if self.current_state == "menu":
-                self.running = not self.handle_menu()
-            elif self.current_state == "playing":
-                self.running = not self.handle_playing()
+    def _update_time(self):
+        """Update game time"""
+        return self.clock.tick(GameConstants.FPS) / 1000.0
 
-        return True
+    def _update_game_state(self, teclas, delta_time):
+        """Update game state for all players"""
+        for jugador in self.jugadores:
+            self._update_player(jugador, teclas, delta_time)
+
+    def _update_player(self, jugador, teclas, delta_time):
+        """Update individual player state"""
+        jugador.calcular_colision(self.controlador, teclas)
+        jugador.mover(teclas, delta_time, self.pantalla)
+
+    def _render_game(self):
+        """Render game state"""
+        self.pantalla.actualizar_juego(
+            fondo=self.fondo,
+            jugadores=self.jugadores,
+            plataforma=self.controlador,
+            hud=lambda p: self.hud.dibujar(p, self.jugadores)
+        )
 
 class SpriteSheet:
     """Handles sprite sheets and tile cutting"""
@@ -796,18 +1001,134 @@ class ResourceManager:
                     combined_surface.blit(tile, (col * tile_width, row * tile_height))
         return combined_surface
 
+class HUD:
+    """Heads Up Display for game interface"""
+    def __init__(self, game_constants):
+        self.constants = game_constants
+        self._setup_colors()
+        self._setup_rects()
+
+    def _setup_colors(self):
+        """Setup color references for better readability"""
+        self.colors = {
+            'background': self.constants.COLORS['RED'],
+            'health': self.constants.COLORS['GREEN'],
+            'border': self.constants.COLORS['WHITE']
+        }
+
+    def _setup_rects(self):
+        """Initialize health bar rectangles for both players"""
+        screen_width = pygame.display.get_surface().get_width()
+        screen_height = pygame.display.get_surface().get_height()
+        
+        # Rectángulo jugador 1 (izquierda)
+        self.background_rect_p1 = pygame.Rect(
+            self.constants.UI_MARGIN,
+            screen_height - self.constants.UI_MARGIN_BOTTOM,
+            self.constants.UI_HEALTH_WIDTH,
+            self.constants.UI_HEALTH_HEIGHT
+        )
+        
+        # Rectángulo jugador 2 (derecha)
+        self.background_rect_p2 = pygame.Rect(
+            screen_width - self.constants.UI_HEALTH_WIDTH - self.constants.UI_MARGIN,
+            screen_height - self.constants.UI_MARGIN_BOTTOM,
+            self.constants.UI_HEALTH_WIDTH,
+            self.constants.UI_HEALTH_HEIGHT
+        )
+
+    def dibujar(self, pantalla=Pantalla, jugadores=None):
+        if not jugadores or len(jugadores) < 2:
+            return
+            
+        display = pantalla.get_screen_data("display")
+        
+        # Dibujar barra de vida jugador 1
+        self._draw_player_health_bar(
+            display, 
+            jugadores[0].get_health_percentage(),
+            self.background_rect_p1
+        )
+        
+        # Dibujar barra de vida jugador 2
+        self._draw_player_health_bar(
+            display,
+            jugadores[1].get_health_percentage(),
+            self.background_rect_p2
+        )
+
+    def _draw_player_health_bar(self, display, health_percentage, background_rect):
+        """Draw health bar for a specific player"""
+        # Fondo
+        pygame.draw.rect(display, self.colors['background'], background_rect)
+        
+        # Barra de vida actual
+        health_rect = background_rect.copy()
+        health_rect.width = self.constants.UI_HEALTH_WIDTH * health_percentage
+        pygame.draw.rect(display, self.colors['health'], health_rect)
+        
+        # Borde
+        pygame.draw.rect(display, self.colors['border'], background_rect, 2)
+
+class PlayerControls:
+    """Configuration class for player controls"""
+    def __init__(self, up=pygame.K_UP, down=pygame.K_DOWN, 
+                 left=pygame.K_LEFT, right=pygame.K_RIGHT):
+        self.controls = {
+            'up': up,
+            'down': down,
+            'left': left,
+            'right': right
+        }
+    
+    def get_key(self, action):
+        return self.controls.get(action)
+    
+    def set_key(self, action, key):
+        if action in self.controls:
+            self.controls[action] = key
+
+    @classmethod
+    def get_default_controls(cls, player_number=1):
+        if player_number == 1:
+            return cls(pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT)
+        return cls(pygame.K_w, pygame.K_s, pygame.K_a, pygame.K_d)
+
 # Modificar la función main para usar GameStateManager
 def main():
     pygame.init()
     pygame.mixer.init()  # Inicializar el sistema de sonido
     
-    pantalla_principal = Pantalla(800, 600, "Pantalla Principal")
+    pantalla_principal = Pantalla(800, 600, "Ultimate Cube Battle")
     tamaño_baldosa = pantalla_principal.get_screen_data("tile_size")
     controlador = controlador_plataformas()
-    jugador = Personaje(pantalla_principal.get_screen_data("mid_x"), 300, tamaño_baldosa)
+    
+    # Crear jugadores
+    mid_x = pantalla_principal.get_screen_data("mid_x")
+    jugadores = [
+        Personaje(
+            mid_x - 50,  # Más a la izquierda
+            300,
+            tamaño_baldosa,
+            player_id=1
+        ),
+        Personaje(
+            mid_x + 50,  # Más a la derecha
+            300,
+            tamaño_baldosa,
+            player_id=2
+        )
+    ]
+    
+    hud = HUD(GameConstants)
 
     try:
-        game_manager = GameStateManager(pantalla_principal, jugador, controlador)
+        game_manager = GameStateManager(
+            pantalla_principal,
+            jugadores,
+            controlador,
+            hud
+        )
         game_manager.run()
     except KeyboardInterrupt:
         print("Interrupción del teclado detectada. Saliendo del juego...")
