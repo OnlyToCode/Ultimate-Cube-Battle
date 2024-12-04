@@ -233,6 +233,18 @@ class CollisionHandler:
         return state
 
     @staticmethod
+    def check_player_collisions(player1, player2, damage_threshold, damage_reduction_factor):
+        """Check for collisions between players and apply damage"""
+        if player1.get_rect().colliderect(player2.get_rect()):
+            velocity_diff = abs(player1.velocidad_x - player2.velocidad_x) + abs(player1.velocidad_y - player2.velocidad_y)
+            if velocity_diff > damage_threshold:
+                damage = (velocity_diff - damage_threshold) * damage_reduction_factor
+                if player1.velocidad_x + player1.velocidad_y < player2.velocidad_x + player2.velocidad_y:
+                    player1.take_damage(damage, direction=player2.direccion_bloqueo)
+                else:
+                    player2.take_damage(damage, direction=player1.direccion_bloqueo)
+
+    @staticmethod
     def update_character_state(character, collision_state, keys):
         """Update character state based on collisions"""
         if collision_state.body:
@@ -300,6 +312,8 @@ class Personaje:
         self.cavar = False
         self.ensima_Colision = None
         self.estado_gravedad = GameConstants.STATE_FALLING
+        self.bloqueando = False
+        self.direccion_bloqueo = None
 
     def _init_controls(self, controls, player_id):
         """Initialize player controls"""
@@ -420,6 +434,28 @@ class Personaje:
     def cavando(self, nuevo_estado):
         self.cavar = nuevo_estado
 
+    def bloquear(self, teclas):
+        """Handle blocking"""
+        block_key = self.controls.get_key('block')
+        if teclas[block_key]:
+            self.bloqueando = True
+            if teclas[self.controls.get_key('left')]:
+                self.direccion_bloqueo = 'left'
+            elif teclas[self.controls.get_key('right')]:
+                self.direccion_bloqueo = 'right'
+            elif teclas[self.controls.get_key('up')]:
+                self.direccion_bloqueo = 'up'
+            elif teclas[self.controls.get_key('down')]:
+                self.direccion_bloqueo = 'down'
+        else:
+            self.bloqueando = False
+            self.direccion_bloqueo = None
+
+    def take_damage(self, amount, direction=None):
+        if self.bloqueando and direction == self.direccion_bloqueo:
+            amount *= 0.5  # Reduce damage by 50% if blocking in the correct direction
+        self.health = max(0, self.health - amount)
+
     def get_collision_rects(self):
         """Get all collision rectangles"""
         return {
@@ -494,6 +530,7 @@ class Personaje:
         """Update physics state"""
         self.accion_gravedad()
         self.frenar(teclas)
+        self.bloquear(teclas)
 
     def _update_position(self, velocidades):
         """Update position based on scaled velocities"""
@@ -759,6 +796,15 @@ class GameStateManager:
         """Update game state for all players"""
         for jugador in self.jugadores:
             self._update_player(jugador, teclas, delta_time)
+        
+        # Check for player collisions and apply damage
+        if len(self.jugadores) > 1:
+            CollisionHandler.check_player_collisions(
+                self.jugadores[0], 
+                self.jugadores[1], 
+                damage_threshold=5, 
+                damage_reduction_factor=0.5
+            )
 
     def _update_player(self, jugador, teclas, delta_time):
         """Update individual player state"""
@@ -1073,12 +1119,15 @@ class HUD:
 class PlayerControls:
     """Configuration class for player controls"""
     def __init__(self, up=pygame.K_UP, down=pygame.K_DOWN, 
-                 left=pygame.K_LEFT, right=pygame.K_RIGHT):
+                 left=pygame.K_LEFT, right=pygame.K_RIGHT, 
+                 block=pygame.K_RCTRL, charge=pygame.K_KP0):
         self.controls = {
             'up': up,
             'down': down,
             'left': left,
-            'right': right
+            'right': right,
+            'block': block,
+            'charge': charge
         }
     
     def get_key(self, action):
@@ -1091,8 +1140,8 @@ class PlayerControls:
     @classmethod
     def get_default_controls(cls, player_number=1):
         if player_number == 1:
-            return cls(pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT)
-        return cls(pygame.K_w, pygame.K_s, pygame.K_a, pygame.K_d)
+            return cls(pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT, pygame.K_RCTRL, pygame.K_KP0)
+        return cls(pygame.K_w, pygame.K_s, pygame.K_a, pygame.K_d, pygame.K_q, pygame.K_e)
 
 # Modificar la función main para usar GameStateManager
 def main():
