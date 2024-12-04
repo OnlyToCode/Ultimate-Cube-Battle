@@ -29,6 +29,13 @@ class GameConstants:
     MENU_OVERLAY_ALPHA = 1
     MENU_OVERLAY_COLOR = (190, 190, 190)
     TILE_DIVISOR = 30
+    
+    # UI Constants
+    UI_MARGIN = 20  # Margen desde los bordes
+    UI_HEALTH_WIDTH = 200  # Ancho de la barra de vida
+    UI_HEALTH_HEIGHT = 30  # Alto de la barra de vida
+    PLAYER_MAX_HEALTH = 300
+    PLAYER_DAMAGE_FALL = 100  # Un tercio de la vida máxima
 
 class AudioConfig:
     """Configuration class for audio settings"""
