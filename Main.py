@@ -38,6 +38,33 @@ class GameConstants:
     PLAYER_MAX_HEALTH = 300
     PLAYER_RESPAWN_DAMAGE = 100  # Renombrado de PLAYER_DAMAGE_FALL
 
+    # Spawn positions (as percentage of screen)
+    SPAWN_OFFSET_X = 0.15  # 15% offset from center for both players
+    SPAWN_HEIGHT = 0.4     # 40% from top of screen
+    
+    # Victory screen constants
+    VICTORY_TITLE_SIZE = 64
+    VICTORY_TEXT_COLOR = (255, 215, 0)  # Gold color
+    VICTORY_SPRITE_SCALE = 4  # Scale factor for winner sprite
+    BUTTON_WIDTH = 200
+    BUTTON_HEIGHT = 50
+    BUTTON_COLOR = (100, 100, 100)
+    BUTTON_HOVER_COLOR = (150, 150, 150)
+    BUTTON_TEXT_COLOR = (255, 255, 255)
+    BUTTON_TEXT_SIZE = 32
+
+    @staticmethod
+    def calculate_spawn_positions(screen_width, screen_height):
+        """Calculate spawn positions for both players"""
+        center_x = screen_width / 2
+        spawn_y = screen_height * GameConstants.SPAWN_HEIGHT
+        offset_x = screen_width * GameConstants.SPAWN_OFFSET_X
+        
+        return {
+            1: (center_x - offset_x, spawn_y),  # Left player
+            2: (center_x + offset_x, spawn_y)   # Right player
+        }
+
 class AudioConfig:
     """Configuration class for audio settings"""
     def __init__(self):
@@ -119,7 +146,7 @@ class Pantalla:
         self.width = width
         self.height = height
         pygame.display.set_caption(title)
-        self.display_surface = self._select_screen(1)
+        self.display_surface = self._select_screen(0)
         self._calculate_dimensions()
 
     def _calculate_dimensions(self):
@@ -188,10 +215,12 @@ class Pantalla:
         """Update the display"""
         pygame.display.flip()
 
-    def actualizar_menu(self):
-        """Update menu display with overlay"""
-        #self._clear_screen()#
+    def actualizar_menu(self, winner=None):
+        """Update menu display with overlay and optional winner"""
+        self._clear_screen()
         self._draw_menu_overlay()
+        if winner:
+            self._draw_winner(winner)
         self._update_display()
 
     def _draw_menu_overlay(self):
@@ -202,6 +231,31 @@ class Pantalla:
         )
         overlay.fill((*GameConstants.MENU_OVERLAY_COLOR, GameConstants.MENU_OVERLAY_ALPHA))
         self.display_surface.blit(overlay, (0, 0))
+
+    def _draw_winner(self, winner):
+        """Draw winner sprite and text in menu"""
+        resource_manager = ResourceManager()
+        
+        # Draw winner sprite
+        winner_sprite = resource_manager.get_scaled_sprite(
+            'player',
+            winner.tamaño * GameConstants.VICTORY_SPRITE_SCALE,
+            winner.tamaño * GameConstants.VICTORY_SPRITE_SCALE,
+            winner.sprite_config['row'],
+            winner.sprite_config['col']
+        )
+        if winner_sprite:
+            sprite_rect = winner_sprite.get_rect(
+                center=(self.screen_data.mid_x,
+                       self.screen_data.mid_y))
+            self.display_surface.blit(winner_sprite, sprite_rect)
+
+        # Draw winner text
+        font = pygame.font.Font(None, GameConstants.VICTORY_TITLE_SIZE)
+        text = font.render(f"Player {winner.player_id} Wins!", True, 
+                         GameConstants.VICTORY_TEXT_COLOR)
+        text_rect = text.get_rect(centerx=self.screen_data.mid_x, y=100)
+        self.display_surface.blit(text, text_rect)
 
     def detener(self):
         pygame.display.quit()
@@ -231,6 +285,60 @@ class CollisionHandler:
                 state.platform = platform
                 
         return state
+
+    @staticmethod
+    def check_player_collisions(player1, player2, damage_threshold=5, damage_factor=0.5):
+        """Enhanced player collision detection and response"""
+        if not player1.get_rect().colliderect(player2.get_rect()):
+            return
+
+        # Calculate relative velocities
+        rel_vel_x = abs(player1.velocidad_x - player2.velocidad_x)
+        rel_vel_y = abs(player1.velocidad_y - player2.velocidad_y)
+        impact_velocity = math.sqrt(rel_vel_x**2 + rel_vel_y**2)
+
+        if impact_velocity <= damage_threshold:
+            return
+
+        # Calculate impact direction
+        if abs(rel_vel_x) > abs(rel_vel_y):
+            direction = 'left' if player1.rect.centerx > player2.rect.centerx else 'right'
+        else:
+            direction = 'up' if player1.rect.centery > player2.rect.centery else 'down'
+
+        # Calculate damage
+        damage = (impact_velocity - damage_threshold) * damage_factor
+
+        # Apply damage and knockback
+        if player1.velocidad_x**2 + player1.velocidad_y**2 > player2.velocidad_x**2 + player2.velocidad_y**2:
+            CollisionHandler._apply_collision_effects(player2, player1, damage, direction)
+        else:
+            CollisionHandler._apply_collision_effects(player1, player2, damage, direction)
+
+    @staticmethod
+    def _apply_collision_effects(receiver, attacker, damage, direction):
+        """Apply collision effects to the receiving player"""
+        # Apply damage considering blocking
+        if receiver.bloqueando and receiver.direccion_bloqueo == direction:
+            damage *= 0.3  # 70% damage reduction when blocking correctly
+            # Reverse some momentum back to attacker
+            if direction in ['left', 'right']:
+                attacker.velocidad_x *= -0.5
+            else:
+                attacker.velocidad_y *= -0.5
+        else:
+            # Apply knockback to receiver
+            knockback_force = damage * 2
+            if direction == 'left':
+                receiver.velocidad_x = -knockback_force
+            elif direction == 'right':
+                receiver.velocidad_x = knockback_force
+            elif direction == 'up':
+                receiver.velocidad_y = -knockback_force
+            else:  # down
+                receiver.velocidad_y = knockback_force
+
+        receiver.take_damage(damage)
 
     @staticmethod
     def update_character_state(character, collision_state, keys):
@@ -300,6 +408,8 @@ class Personaje:
         self.cavar = False
         self.ensima_Colision = None
         self.estado_gravedad = GameConstants.STATE_FALLING
+        self.bloqueando = False
+        self.direccion_bloqueo = None
 
     def _init_controls(self, controls, player_id):
         """Initialize player controls"""
@@ -420,6 +530,28 @@ class Personaje:
     def cavando(self, nuevo_estado):
         self.cavar = nuevo_estado
 
+    def bloquear(self, teclas):
+        """Handle blocking"""
+        block_key = self.controls.get_key('block')
+        if teclas[block_key]:
+            self.bloqueando = True
+            if teclas[self.controls.get_key('left')]:
+                self.direccion_bloqueo = 'left'
+            elif teclas[self.controls.get_key('right')]:
+                self.direccion_bloqueo = 'right'
+            elif teclas[self.controls.get_key('up')]:
+                self.direccion_bloqueo = 'up'
+            elif teclas[self.controls.get_key('down')]:
+                self.direccion_bloqueo = 'down'
+        else:
+            self.bloqueando = False
+            self.direccion_bloqueo = None
+
+    def take_damage(self, amount, direction=None):
+        if self.bloqueando and direction == self.direccion_bloqueo:
+            amount *= 0.5  # Reduce damage by 50% if blocking in the correct direction
+        self.health = max(0, self.health - amount)
+
     def get_collision_rects(self):
         """Get all collision rectangles"""
         return {
@@ -494,6 +626,7 @@ class Personaje:
         """Update physics state"""
         self.accion_gravedad()
         self.frenar(teclas)
+        self.bloquear(teclas)
 
     def _update_position(self, velocidades):
         """Update position based on scaled velocities"""
@@ -672,6 +805,8 @@ class GameStateManager:
         self.pantalla = pantalla
         self._setup_game_objects(jugadores, controlador, hud)
         self._setup_game_state()
+        self.victory_screen = None
+        self.last_winner = None
 
     def _setup_game_objects(self, jugadores, controlador, hud):
         """Initialize game objects"""
@@ -699,7 +834,8 @@ class GameStateManager:
         """Handle current game state"""
         state_handlers = {
             "menu": self.handle_menu,
-            "playing": self.handle_playing
+            "playing": self.handle_playing,
+            "victory": self.handle_victory
         }
         return state_handlers.get(self.current_state, lambda: False)()
 
@@ -709,10 +845,11 @@ class GameStateManager:
             return True
 
         teclas = pygame.key.get_pressed()
-        self.pantalla.actualizar_menu()
+        self.pantalla.actualizar_menu(self.last_winner)
 
         if teclas[pygame.K_ESCAPE]:
             self._transition_to_state("playing")
+            self.last_winner = None  # Clear winner when starting new game
         elif teclas[pygame.K_BACKSPACE]:
             return True
         return False
@@ -731,6 +868,60 @@ class GameStateManager:
         self._update_game_state(teclas, delta_time)
         self._render_game()
         return False
+
+    def handle_victory(self):
+        """Handle victory screen state"""
+        # Dibujamos solo una vez el fondo del juego
+        self.pantalla.actualizar_juego(
+            fondo=self.fondo,
+            jugadores=self.jugadores,
+            plataforma=self.controlador
+        )
+        
+        result = self.victory_screen.handle_input()
+        
+        if result == "quit":
+            return True
+        elif result == "restart":
+            self.last_winner = self.victory_screen.winner
+            self._reset_game()
+            self._transition_to_state("menu")
+            return False
+        
+        # Dibujamos la capa de victoria encima
+        self.victory_screen.draw(self.pantalla.get_screen_data("display"))
+        pygame.display.flip()
+        return False
+
+    def _render_victory(self):
+        """Render victory screen"""
+        self.pantalla.actualizar_juego(
+            fondo=self.fondo,
+            jugadores=self.jugadores,
+            plataforma=self.controlador
+        )
+        self.victory_screen.draw(self.pantalla.get_screen_data("display"))
+        pygame.display.flip()
+
+    def _check_victory(self):
+        """Check if someone won"""
+        for jugador in self.jugadores:
+            if jugador.health <= 0:
+                winner = next(p for p in self.jugadores if p != jugador)
+                self.victory_screen = VictoryScreen(self.pantalla, winner)
+                self._transition_to_state("victory")
+                break
+
+    def _reset_game(self):
+        """Reset game state for a new match"""
+        screen_width = self.pantalla.get_screen_data("width")
+        screen_height = self.pantalla.get_screen_data("height")
+        spawn_positions = GameConstants.calculate_spawn_positions(screen_width, screen_height)
+        
+        for jugador in self.jugadores:
+            jugador.health = GameConstants.PLAYER_MAX_HEALTH
+            spawn_pos = spawn_positions[jugador.player_id]
+            jugador.reiniciar_posicion(spawn_pos[0], spawn_pos[1])
 
     def _check_quit_event(self):
         """Check for quit events"""
@@ -757,8 +948,19 @@ class GameStateManager:
 
     def _update_game_state(self, teclas, delta_time):
         """Update game state for all players"""
+        # Update player states first
         for jugador in self.jugadores:
             self._update_player(jugador, teclas, delta_time)
+        
+        # Then check collisions
+        if len(self.jugadores) > 1:
+            CollisionHandler.check_player_collisions(
+                self.jugadores[0],
+                self.jugadores[1],
+                damage_threshold=7,  # Adjusted threshold
+                damage_factor=0.8    # Adjusted damage factor
+            )
+        self._check_victory()  # Add this line at the end
 
     def _update_player(self, jugador, teclas, delta_time):
         """Update individual player state"""
@@ -1073,12 +1275,15 @@ class HUD:
 class PlayerControls:
     """Configuration class for player controls"""
     def __init__(self, up=pygame.K_UP, down=pygame.K_DOWN, 
-                 left=pygame.K_LEFT, right=pygame.K_RIGHT):
+                 left=pygame.K_LEFT, right=pygame.K_RIGHT, 
+                 block=pygame.K_RCTRL, charge=pygame.K_KP0):
         self.controls = {
             'up': up,
             'down': down,
             'left': left,
-            'right': right
+            'right': right,
+            'block': block,
+            'charge': charge
         }
     
     def get_key(self, action):
@@ -1091,8 +1296,90 @@ class PlayerControls:
     @classmethod
     def get_default_controls(cls, player_number=1):
         if player_number == 1:
-            return cls(pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT)
-        return cls(pygame.K_w, pygame.K_s, pygame.K_a, pygame.K_d)
+            return cls(pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT, pygame.K_RCTRL, pygame.K_KP0)
+        return cls(pygame.K_w, pygame.K_s, pygame.K_a, pygame.K_d, pygame.K_q, pygame.K_e)
+
+class VictoryScreen:
+    def __init__(self, pantalla, winner):
+        self.pantalla = pantalla
+        self.winner = winner
+        self.setup_ui()
+        
+    def setup_ui(self):
+        screen_width = self.pantalla.get_screen_data("width")
+        screen_height = self.pantalla.get_screen_data("height")
+        
+        # Setup restart button
+        self.button_rect = pygame.Rect(
+            (screen_width - GameConstants.BUTTON_WIDTH) // 2,
+            screen_height * 0.7,
+            GameConstants.BUTTON_WIDTH,
+            GameConstants.BUTTON_HEIGHT
+        )
+        
+        # Setup fonts
+        self.title_font = pygame.font.Font(None, GameConstants.VICTORY_TITLE_SIZE)
+        self.button_font = pygame.font.Font(None, GameConstants.BUTTON_TEXT_SIZE)
+        
+    def draw(self, surface):
+        # Draw background overlay
+        overlay = pygame.Surface(
+            (self.pantalla.get_screen_data("width"), 
+             self.pantalla.get_screen_data("height")), 
+            pygame.SRCALPHA
+        )
+        overlay.fill((0, 0, 0, 180))  # Semi-transparent black
+        surface.blit(overlay, (0, 0))
+        
+        # Draw victory text
+        text = self.title_font.render(f"Player {self.winner.player_id} Wins!", True, 
+                                    GameConstants.VICTORY_TEXT_COLOR)
+        text_rect = text.get_rect(centerx=self.pantalla.get_screen_data("mid_x"), 
+                                 y=100)
+        surface.blit(text, text_rect)
+        
+        # Draw winner sprite scaled up
+        resource_manager = ResourceManager()
+        winner_sprite = resource_manager.get_scaled_sprite(
+            'player',
+            self.winner.tamaño * GameConstants.VICTORY_SPRITE_SCALE,
+            self.winner.tamaño * GameConstants.VICTORY_SPRITE_SCALE,
+            self.winner.sprite_config['row'],
+            self.winner.sprite_config['col']
+        )
+        if winner_sprite:
+            sprite_rect = winner_sprite.get_rect(
+                center=(self.pantalla.get_screen_data("mid_x"),
+                       self.pantalla.get_screen_data("mid_y"))
+            )
+            surface.blit(winner_sprite, sprite_rect)
+        
+        # Draw restart button
+        mouse_pos = pygame.mouse.get_pos()
+        button_color = (GameConstants.BUTTON_HOVER_COLOR 
+                       if self.button_rect.collidepoint(mouse_pos) 
+                       else GameConstants.BUTTON_COLOR)
+        
+        pygame.draw.rect(surface, button_color, self.button_rect)
+        
+        # Draw button text
+        button_text = self.button_font.render("Restart", True, 
+                                            GameConstants.BUTTON_TEXT_COLOR)
+        text_rect = button_text.get_rect(center=self.button_rect.center)
+        surface.blit(button_text, text_rect)
+    
+    def handle_input(self):
+        """Handle input events for the victory screen"""
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return "quit"
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if self.button_rect.collidepoint(event.pos):
+                    return "restart"
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return "restart"
+        return None
 
 # Modificar la función main para usar GameStateManager
 def main():
@@ -1103,18 +1390,22 @@ def main():
     tamaño_baldosa = pantalla_principal.get_screen_data("tile_size")
     controlador = controlador_plataformas()
     
-    # Crear jugadores
-    mid_x = pantalla_principal.get_screen_data("mid_x")
+    # Calculate spawn positions
+    screen_width = pantalla_principal.get_screen_data("width")
+    screen_height = pantalla_principal.get_screen_data("height")
+    spawn_positions = GameConstants.calculate_spawn_positions(screen_width, screen_height)
+    
+    # Create players with calculated spawn positions
     jugadores = [
         Personaje(
-            mid_x - 50,  # Más a la izquierda
-            300,
+            spawn_positions[1][0],
+            spawn_positions[1][1],
             tamaño_baldosa,
             player_id=1
         ),
         Personaje(
-            mid_x + 50,  # Más a la derecha
-            300,
+            spawn_positions[2][0],
+            spawn_positions[2][1],
             tamaño_baldosa,
             player_id=2
         )
